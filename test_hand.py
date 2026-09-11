@@ -15,6 +15,16 @@ class TestHand(unittest.TestCase):
         hand = Hand([1, 9, 5])
         self.assertEqual(hand.score(), 15)
 
+    def test_ace_returns_true_for_aces_from_each_suit(self):
+        for ace in [1, 14, 27, 40]:
+            with self.subTest(ace=ace):
+                self.assertTrue(Hand([ace]).ace())
+
+    def test_ace_returns_false_when_hand_has_no_ace(self):
+        for cards in [[], [2, 10], [13, 26, 39, 52]]:
+            with self.subTest(cards=cards):
+                self.assertFalse(Hand(cards).ace())
+
     def test_multiple_aces_use_the_best_valid_values(self):
         hand = Hand([1, 14, 9])
         self.assertEqual(hand.score(), 21)
