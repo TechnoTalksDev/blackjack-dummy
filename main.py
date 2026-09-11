@@ -1,5 +1,7 @@
 import random
 import math
+import time
+from datetime import timedelta
 
 from enum import Enum
 from collections import namedtuple, deque
@@ -13,8 +15,8 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
+#device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = torch.device("cpu")  # Force CPU usage for compatibility
 
 class Deck:
     def __init__(self, cards=None, auto_shuffle=False):
@@ -361,7 +363,7 @@ BATCH_SIZE = 128
 GAMMA = 0.99
 EPS_START = .9
 EPS_END = .01
-EPS_DECAY = 2500
+EPS_DECAY = 3000
 TAU = .005
 LR = 3e-4
 
@@ -392,9 +394,23 @@ def select_action(state):
         random_action = random.choice(list(BjAction)).value
         return torch.tensor([[random_action]], device = device, dtype=torch.long)
 
+def select_greedy_action(state):
+    with torch.no_grad():
+        return policy_net(state).max(1).indices.view(1, 1)
+
 episode_durations = []
 episode_rewards = []
 episode_results = []
+
+WIN_RESULTS = {
+    BjResult.PLAYER_WIN,
+    BjResult.DEALER_BUST,
+}
+
+LOSS_RESULTS = {
+    BjResult.PLAYER_BUST,
+    BjResult.DEALER_WIN,
+}
 
 def plot_durations(show_result=False):
     plt.figure(1)
@@ -421,14 +437,10 @@ def plot_win_rate(show_result=False, window=100):
     if not episode_results:
         return
     
-    win_results = {
-        BjResult.PLAYER_WIN,
-        BjResult.DEALER_BUST,
-    }
     
     win_values = torch.tensor(
         [
-            float(result in win_results)
+            float(result in WIN_RESULTS)
             for result in episode_results
         ],
         dtype=torch.float32
@@ -468,23 +480,13 @@ def print_summary():
         print("No episode statistics available.")
         return
 
-    win_results = {
-        BjResult.PLAYER_WIN,
-        BjResult.DEALER_BUST,
-    }
-
-    loss_results = {
-        BjResult.PLAYER_BUST,
-        BjResult.DEALER_WIN,
-    }
-
     wins = sum(
-        result in win_results
+        result in WIN_RESULTS
         for result in episode_results
     )
 
     losses = sum(
-        result in loss_results
+        result in LOSS_RESULTS
         for result in episode_results
     )
 
@@ -512,6 +514,59 @@ def print_summary():
     print(f"Tie rate:          {ties / total_episodes:.2%}")
     print(f"Average reward:    {average_reward:.3f}")
     print(f"Average duration:  {average_duration:.2f} actions")
+
+def evaluate_bot(num_episodes=1000):
+    policy_net.eval()
+
+    results = []
+    deck = Deck(auto_shuffle=True)
+
+    for _ in range(num_episodes):
+        game = Blackjack(deck)
+
+        # Match training behavior by excluding natural blackjacks.
+        while game.state == BjState.COMPLETE:
+            game = Blackjack(deck)
+
+        state = torch.tensor(
+            game.get_data(),
+            device=device,
+            dtype=torch.float32,
+        ).unsqueeze(0)
+
+        for _ in count():
+            action = select_greedy_action(state)
+            result = game.turn(BjAction(action.item()))
+
+            if result is not None:
+                results.append(result)
+                break
+
+            state = torch.tensor(
+                [game.get_data()],
+                device=device,
+                dtype=torch.float32,
+            )
+
+    policy_net.train()
+
+
+
+    wins = sum(result in WIN_RESULTS for result in results)
+    losses = sum(result in LOSS_RESULTS for result in results)
+    ties = sum(result == BjResult.TIE for result in results)
+
+    total = len(results)
+
+    print("\nEvaluation Summary")
+    print("------------------")
+    print(f"Episodes:   {total}")
+    print(f"Wins:       {wins}")
+    print(f"Losses:     {losses}")
+    print(f"Ties:       {ties}")
+    print(f"Win rate:   {wins / total:.2%}")
+    print(f"Loss rate:  {losses / total:.2%}")
+    print(f"Tie rate:   {ties / total:.2%}")
 
 def optimize_model():
     if len(memory) < BATCH_SIZE:
@@ -587,7 +642,7 @@ def train_bot():
 
     if torch.cuda.is_available():
         print("Using GPU")
-        num_episodes = 500
+        num_episodes = 20000
     else:
         print("Using CPU")
         num_episodes = 50
@@ -635,22 +690,35 @@ def train_bot():
                 episode_rewards.append(episode_reward)
                 episode_results.append(result)
                 episode_durations.append(t + 1)
-
-                plot_win_rate()
+                
+                wins = sum(result in WIN_RESULTS for result in episode_results)
+                rate = wins / len(episode_results)
+                
+                if (i_episode + 1) % 100 == 0 or i_episode == num_episodes - 1:
+                    print(f"Episode {i_episode+1}/{num_episodes} finished after {t+1} actions. Result: {result.name}. Reward: {episode_reward:.2f}. Win rate: {rate:.2%}")
+                
+                #plot_win_rate() # removed for performance reasons
                 break
 
     print("Training complete")
-    #plot_durations(show_result=True)
-    plot_win_rate(show_result=True)
     print_summary()
-    plt.ioff()
-    plt.show()
 
 
 def main():
     print("Hello from blackjack-dummy!")
-
+    training_start_time = time.time()
+    
     train_bot()
+    print(f"Training time: {str(timedelta(seconds=(time.time()-training_start_time)))}")
+    
+    evaluation_start_time = time.time()
+    evaluate_bot(num_episodes=1000)
+    print(f"Evaluation time: {str(timedelta(seconds=(time.time()-evaluation_start_time)))}")
+    
+    plot_win_rate(show_result=True)
+    
+    plt.ioff()
+    plt.show()
 
 
 if __name__ == "__main__":
